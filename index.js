@@ -5,10 +5,12 @@ const fs = require("fs");
 const path = require("path");
 const express = require("express");
 
-// Initialize Express
+// Web server to keep the bot alive
 const app = express();
-app.get("/", (req, res) => res.send("Bot is alive!"));
-app.listen(3000, "0.0.0.0", () => console.log("Web server running..."));
+const PORT = process.env.PORT || 3000;
+
+app.get("/", (req, res) => res.send("WhatsApp Bot is running."));
+app.listen(PORT, "0.0.0.0", () => console.log(`Keep-alive web server running on port ${PORT}`));
 
 const store = makeInMemoryStore({ logger: pino().child({ level: "silent" }) });
 const bannedUsers = new Set();

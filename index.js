@@ -133,6 +133,31 @@ const startSock = async () => {
                     await sock.sendMessage(from, { text: "Running a BIG function..." });
                     break;
 
+                case "menu":
+                case "|menu":
+                    const menuText = `
+*🤖 WhatsApp Bot Menu*
+
+|menu - Show this menu
+!tagall - Tag everyone
+!tagadmins - Tag admins
+!ban @user - Ban user
+!kick @user - Remove user from group
+!kickall - Kick all members (except you)
+!add 1234567890 - Add member to group
+!mute @user - Demote member
+!groupinfo - Show group details
+!status 1234567890 - View status (if available)
+!sticker - Convert image to sticker (send with image)
+!autoreply on/off - Toggle auto-replies
+!grouppic - Show group profile picture
+!big - Placeholder big function
+
+_Powered by Baileys + Replit_
+    `.trim();
+                    await sock.sendMessage(from, { text: menuText });
+                    break;
+
                 default:
                     await sock.sendMessage(from, { text: "Unknown command." });
             }

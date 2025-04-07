@@ -1,6 +1,12 @@
 
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require("@whiskeysockets/baileys");
 const pino = require("pino");
+const express = require("express");
+
+// Initialize Express
+const app = express();
+app.get("/", (req, res) => res.send("Bot is alive!"));
+app.listen(3000, "0.0.0.0", () => console.log("Web server running..."));
 
 // Command handlers
 async function tagAll(sock, groupId, msg) {

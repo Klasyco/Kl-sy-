@@ -1,6 +1,8 @@
 
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require("@whiskeysockets/baileys");
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage, makeInMemoryStore } = require("@whiskeysockets/baileys");
 const pino = require("pino");
+const fs = require("fs");
+const path = require("path");
 const express = require("express");
 
 // Initialize Express
@@ -8,74 +10,24 @@ const app = express();
 app.get("/", (req, res) => res.send("Bot is alive!"));
 app.listen(3000, "0.0.0.0", () => console.log("Web server running..."));
 
-// Command handlers
-async function tagAll(sock, groupId, msg) {
-  try {
-    const group = await sock.groupMetadata(groupId);
-    const participants = group.participants;
-    let mentions = [];
-    let message = "🔊 Attention everyone!\n\n";
-    
-    participants.forEach(participant => {
-      mentions.push(participant.id);
-      message += `@${participant.id.split('@')[0]}\n`;
-    });
-
-    await sock.sendMessage(groupId, { 
-      text: message,
-      mentions: mentions
-    });
-  } catch (error) {
-    console.error("Error in tagAll:", error);
-    await sock.sendMessage(groupId, { text: "Error: This command only works in groups!" });
-  }
-}
-
-async function banUser(sock, groupId, args) {
-  try {
-    if (!args[0]) {
-      await sock.sendMessage(groupId, { text: "Please mention a user to ban!" });
-      return;
-    }
-
-    const userToRemove = args[0].replace('@', '') + '@s.whatsapp.net';
-    await sock.groupParticipantsUpdate(groupId, [userToRemove], "remove");
-    await sock.sendMessage(groupId, { text: `✅ User has been removed from the group!` });
-  } catch (error) {
-    console.error("Error in banUser:", error);
-    await sock.sendMessage(groupId, { text: "Error: Make sure I'm admin and the user exists!" });
-  }
-}
-
-async function bigFunction(sock, from) {
-  const texts = [
-    "🌟 *BIG TEXT* 🌟",
-    "█▀█ █▄░█ █▀▀",
-    "█▀▀ █░█ █▄█",
-    "▀█▀ █░█░█ █▀█",
-    "░█░ ▀▄▀▄▀ █▄█"
-  ];
-  
-  await sock.sendMessage(from, { text: texts.join('\n') });
-}
+const store = makeInMemoryStore({ logger: pino().child({ level: "silent" }) });
+const bannedUsers = new Set();
+let autoReplyEnabled = true;
 
 const startSock = async () => {
     const { state, saveCreds } = await useMultiFileAuthState("auth_info");
-
     const sock = makeWASocket({
-        auth: state,
         logger: pino({ level: "silent" }),
-        printQRInTerminal: true
+        printQRInTerminal: true,
+        auth: state
     });
 
+    store.bind(sock.ev);
     sock.ev.on("creds.update", saveCreds);
 
-    sock.ev.on("connection.update", (update) => {
-        const { connection, lastDisconnect } = update;
-        if (connection === "close") {
-            if (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) {
-                startSock();
-            }
+    sock.ev.on("connection.update", ({ connection, lastDisconnect }) => {
+        if (connection === "close" && lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) {
+            startSock();
         } else if (connection === "open") {
             console.log("Connected to WhatsApp!");
         }
@@ -85,28 +37,107 @@ const startSock = async () => {
         if (type !== "notify") return;
         const msg = messages[0];
         if (!msg.message) return;
+
         const from = msg.key.remoteJid;
+        const isGroup = from.endsWith("@g.us");
         const sender = msg.key.participant || msg.key.remoteJid;
-        const messageContent = msg.message?.conversation || msg.message?.extendedTextMessage?.text;
+        const message = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+        const command = message.startsWith("!") ? message.slice(1).trim().split(" ") : null;
 
-        if (!messageContent) return;
+        if (command) {
+            const [cmd, ...args] = command;
+            const user = args[0]?.replace("@", "") + "@s.whatsapp.net";
 
-        // Handle commands
-        if (messageContent.startsWith("!")) {
-            const [command, ...args] = messageContent.slice(1).split(" ");
-            switch (command.toLowerCase()) {
+            switch (cmd.toLowerCase()) {
                 case "tagall":
-                    await tagAll(sock, from, msg);
+                    if (!isGroup) return;
+                    const meta = await sock.groupMetadata(from);
+                    const mentions = meta.participants.map(p => p.id);
+                    const names = mentions.map(id => `@${id.split("@")[0]}`).join(" ");
+                    await sock.sendMessage(from, { text: names, mentions });
                     break;
+
+                case "tagadmins":
+                    if (!isGroup) return;
+                    const groupMeta = await sock.groupMetadata(from);
+                    const admins = groupMeta.participants.filter(p => p.admin).map(p => p.id);
+                    const adminTags = admins.map(id => `@${id.split("@")[0]}`).join(" ");
+                    await sock.sendMessage(from, { text: adminTags, mentions: admins });
+                    break;
+
                 case "ban":
-                    await banUser(sock, from, args);
+                    if (!user) return sock.sendMessage(from, { text: "Tag someone to ban!" });
+                    bannedUsers.add(user);
+                    await sock.sendMessage(from, { text: `@${user.split("@")[0]} has been *banned*!`, mentions: [user] });
                     break;
+
+                case "kick":
+                    if (!isGroup || !user) return;
+                    await sock.groupParticipantsUpdate(from, [user], "remove");
+                    break;
+
+                case "kickall":
+                    if (!isGroup) return;
+                    const participants = (await sock.groupMetadata(from)).participants.map(p => p.id);
+                    for (let p of participants) {
+                        if (p !== sender) await sock.groupParticipantsUpdate(from, [p], "remove");
+                    }
+                    break;
+
+                case "add":
+                    if (!isGroup || !args[0]) return;
+                    const phone = args[0].replace(/\D/g, "") + "@s.whatsapp.net";
+                    await sock.groupParticipantsUpdate(from, [phone], "add");
+                    break;
+
+                case "mute":
+                    if (!isGroup || !user) return;
+                    await sock.groupParticipantsUpdate(from, [user], "demote");
+                    break;
+
+                case "groupinfo":
+                    if (!isGroup) return;
+                    const info = await sock.groupMetadata(from);
+                    await sock.sendMessage(from, {
+                        text: `*Group Info*\nName: ${info.subject}\nCreated: ${new Date(info.creation * 1000).toDateString()}\nMembers: ${info.participants.length}`
+                    });
+                    break;
+
+                case "status":
+                    if (!args[0]) return;
+                    const statusJid = args[0].replace(/\D/g, "") + "@s.whatsapp.net";
+                    const statuses = store.presences[statusJid]?.lastKnownPresence;
+                    await sock.sendMessage(from, { text: `Status: ${statuses || "Unavailable"}` });
+                    break;
+
+                case "sticker":
+                    if (!msg.message.imageMessage) return;
+                    const buffer = await downloadMediaMessage(msg, "buffer", {}, { logger: pino({ level: "silent" }) });
+                    await sock.sendMessage(from, { sticker: buffer }, { quoted: msg });
+                    break;
+
+                case "autoreply":
+                    if (args[0] === "on") autoReplyEnabled = true;
+                    else if (args[0] === "off") autoReplyEnabled = false;
+                    await sock.sendMessage(from, { text: `Auto-reply is now ${autoReplyEnabled ? "enabled" : "disabled"}` });
+                    break;
+
+                case "grouppic":
+                    if (!isGroup) return;
+                    const profilePic = await sock.profilePictureUrl(from, "image").catch(() => null);
+                    if (profilePic) await sock.sendMessage(from, { image: { url: profilePic }, caption: "Group Profile Picture" });
+                    else await sock.sendMessage(from, { text: "No group profile picture found." });
+                    break;
+
                 case "big":
-                    await bigFunction(sock, from);
+                    await sock.sendMessage(from, { text: "Running a BIG function..." });
                     break;
+
                 default:
                     await sock.sendMessage(from, { text: "Unknown command." });
             }
+        } else if (autoReplyEnabled && isGroup && !bannedUsers.has(sender)) {
+            await sock.sendMessage(from, { text: "I'm a bot. Type !help for commands." });
         }
     });
 };

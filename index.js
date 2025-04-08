@@ -4,17 +4,19 @@ const pino = require("pino");
 const fs = require("fs");
 const path = require("path");
 const express = require("express");
+const axios = require("axios");
 
-// Web server to keep the bot alive
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-app.get("/", (req, res) => res.send("WhatsApp Bot is running."));
-app.listen(PORT, "0.0.0.0", () => console.log(`Keep-alive web server running on port ${PORT}`));
-
 const store = makeInMemoryStore({ logger: pino().child({ level: "silent" }) });
 const bannedUsers = new Set();
 let autoReplyEnabled = true;
+let customReplyText = "I'm a bot. Type !menu for help.";
+let activePoll = null;
+
+// Web server to keep the bot alive
+app.get("/", (req, res) => res.send("WhatsApp Bot is running."));
+app.listen(PORT, "0.0.0.0", () => console.log(`Keep-alive web server running on port ${PORT}`));
 
 const startSock = async () => {
     const { state, saveCreds } = await useMultiFileAuthState("auth_info");
@@ -46,25 +48,62 @@ const startSock = async () => {
         const message = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
         const command = message.startsWith("!") ? message.slice(1).trim().split(" ") : null;
 
+        // Handle welcome messages when a new member joins
+        if (isGroup && msg.message?.protocolMessage?.type === 13) { // New member added
+            const newUser = msg.message.protocolMessage?.recipientId;
+            await sock.sendMessage(from, { text: `Welcome to the group, @${newUser.split("@")[0]}! 🎉` });
+        }
+
         if (command) {
             const [cmd, ...args] = command;
             const user = args[0]?.replace("@", "") + "@s.whatsapp.net";
 
             switch (cmd.toLowerCase()) {
-                case "tagall":
-                    if (!isGroup) return;
-                    const meta = await sock.groupMetadata(from);
-                    const mentions = meta.participants.map(p => p.id);
-                    const names = mentions.map(id => `@${id.split("@")[0]}`).join(" ");
-                    await sock.sendMessage(from, { text: names, mentions });
+                case "menu":
+                case "|menu":
+                    const menuText = `
+╔════◇ *🤖 WHATSAPP BOT MENU* ◇════╗
+
+┃  *COMMANDS LIST:*
+┃
+┃  ✦ *|menu* — Show this menu
+┃  ✦ *!tagall* — Tag all members
+┃  ✦ *!tagadmins* — Tag only admins
+┃  ✦ *!ban @user* — Ban a member
+┃  ✦ *!kick @user* — Kick a member
+┃  ✦ *!kickall* — Kick all (risky!)
+┃  ✦ *!add 234xxxx* — Add member
+┃  ✦ *!mute @user* — Demote member
+┃  ✦ *!groupinfo* — View group details
+┃  ✦ *!status 234xxxx* — Get user status
+┃  ✦ *!sticker* — Turn image to sticker
+┃  ✦ *!grouppic* — Show group photo
+┃  ✦ *!autoreply on/off* — Toggle replies
+┃  ✦ *!setreply [text]* — Set reply text
+┃  ✦ *!poll [question]* — Create a poll
+┃  ✦ *!big* — Big test function
+
+╠═════════════════════╗
+║  *Auto-Reply Message:*  
+║  You can customize it using:
+║  ➤ *!setreply I am a bot. Type !help*
+╚═════════════════════╝
+
+💡 _Pro Tip: You can use any command by typing it directly in the group._
+🔧 _Make sure the bot is admin for group commands._
+
+*Bot by Baileys • Hosted on Replit*
+                    `.trim();
+                    await sock.sendMessage(from, { text: menuText });
                     break;
 
-                case "tagadmins":
-                    if (!isGroup) return;
-                    const groupMeta = await sock.groupMetadata(from);
-                    const admins = groupMeta.participants.filter(p => p.admin).map(p => p.id);
-                    const adminTags = admins.map(id => `@${id.split("@")[0]}`).join(" ");
-                    await sock.sendMessage(from, { text: adminTags, mentions: admins });
+                case "setreply":
+                    if (!args.length) {
+                        await sock.sendMessage(from, { text: "Please type your auto-reply message.\nExample: !setreply I'm a bot!" });
+                        return;
+                    }
+                    customReplyText = command.slice(1 + cmd.length).trim();
+                    await sock.sendMessage(from, { text: `✅ Auto-reply message updated to:\n"${customReplyText}"` });
                     break;
 
                 case "ban":
@@ -99,9 +138,9 @@ const startSock = async () => {
 
                 case "groupinfo":
                     if (!isGroup) return;
-                    const info = await sock.groupMetadata(from);
+                    const groupMeta = await sock.groupMetadata(from);
                     await sock.sendMessage(from, {
-                        text: `*Group Info*\nName: ${info.subject}\nCreated: ${new Date(info.creation * 1000).toDateString()}\nMembers: ${info.participants.length}`
+                        text: `*Group Info*\nName: ${groupMeta.subject}\nCreated: ${new Date(groupMeta.creation * 1000).toDateString()}\nMembers: ${groupMeta.participants.length}`
                     });
                     break;
 
@@ -131,40 +170,21 @@ const startSock = async () => {
                     else await sock.sendMessage(from, { text: "No group profile picture found." });
                     break;
 
-                case "big":
-                    await sock.sendMessage(from, { text: "Running a BIG function..." });
+                case "poll":
+                    if (!args.length) return sock.sendMessage(from, { text: "Please enter a question for the poll!" });
+                    activePoll = args.join(" ");
+                    await sock.sendMessage(from, { text: `✅ Poll created: *${activePoll}*` });
                     break;
 
-                case "menu":
-                case "|menu":
-                    const menuText = `
-*🤖 WhatsApp Bot Menu*
-
-|menu - Show this menu
-!tagall - Tag everyone
-!tagadmins - Tag admins
-!ban @user - Ban user
-!kick @user - Remove user from group
-!kickall - Kick all members (except you)
-!add 1234567890 - Add member to group
-!mute @user - Demote member
-!groupinfo - Show group details
-!status 1234567890 - View status (if available)
-!sticker - Convert image to sticker (send with image)
-!autoreply on/off - Toggle auto-replies
-!grouppic - Show group profile picture
-!big - Placeholder big function
-
-_Powered by Baileys + Replit_
-    `.trim();
-                    await sock.sendMessage(from, { text: menuText });
+                case "big":
+                    await sock.sendMessage(from, { text: "Running a BIG function..." });
                     break;
 
                 default:
                     await sock.sendMessage(from, { text: "Unknown command." });
             }
         } else if (autoReplyEnabled && isGroup && !bannedUsers.has(sender)) {
-            await sock.sendMessage(from, { text: "I'm a bot. Type !help for commands." });
+            await sock.sendMessage(from, { text: customReplyText });
         }
     });
 };

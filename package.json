@@ -12,6 +12,7 @@
   "dependencies": {
     "@types/node": "^22.13.11",
     "@whiskeysockets/baileys": "^6.17.16",
+    "axios": "^1.8.4",
     "express": "^5.1.0",
     "pino": "^9.6.0"
   }

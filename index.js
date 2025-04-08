@@ -80,11 +80,23 @@ const startSock = async () => {
     store.bind(sock.ev);
     sock.ev.on("creds.update", saveCreds);
 
-    sock.ev.on("connection.update", ({ connection, lastDisconnect }) => {
+    sock.ev.on("connection.update", async ({ connection, lastDisconnect }) => {
         if (connection === "close" && lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) {
             startSock();
         } else if (connection === "open") {
             console.log("Connected to WhatsApp!");
+            
+            try {
+                await uploadToGitHub({
+                    content: `Bot connected at ${new Date().toISOString()}`,
+                    filePath: "logs/bot-start.txt",
+                    repo: "your-repo-name",
+                    owner: "your-github-username"
+                });
+                console.log("Connection log uploaded to GitHub");
+            } catch (error) {
+                console.error("Failed to upload connection log:", error.message);
+            }
         }
     });
 

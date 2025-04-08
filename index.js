@@ -14,9 +14,20 @@ let autoReplyEnabled = true;
 let customReplyText = "I'm a bot. Type !menu for help.";
 let activePoll = null;
 
-// Web server to keep the bot alive
 app.get("/", (req, res) => res.send("WhatsApp Bot is running."));
 app.listen(PORT, "0.0.0.0", () => console.log(`Keep-alive web server running on port ${PORT}`));
+
+const getTextFromMessage = (msg) => {
+    const m = msg.message;
+    if (!m) return "";
+    return (
+        m.conversation ||
+        m.extendedTextMessage?.text ||
+        m.imageMessage?.caption ||
+        m.videoMessage?.caption ||
+        ""
+    );
+};
 
 const startSock = async () => {
     const { state, saveCreds } = await useMultiFileAuthState("auth_info");
@@ -37,6 +48,17 @@ const startSock = async () => {
         }
     });
 
+    sock.ev.on("group-participants.update", async ({ id, participants, action }) => {
+        if (action === "add") {
+            for (const participant of participants) {
+                await sock.sendMessage(id, {
+                    text: `Welcome to the group, @${participant.split("@")[0]}!`,
+                    mentions: [participant]
+                });
+            }
+        }
+    });
+
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
         if (type !== "notify") return;
         const msg = messages[0];
@@ -45,14 +67,8 @@ const startSock = async () => {
         const from = msg.key.remoteJid;
         const isGroup = from.endsWith("@g.us");
         const sender = msg.key.participant || msg.key.remoteJid;
-        const message = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+        const message = getTextFromMessage(msg);
         const command = message.startsWith("!") ? message.slice(1).trim().split(" ") : null;
-
-        // Handle welcome messages when a new member joins
-        if (isGroup && msg.message?.protocolMessage?.type === 13) { // New member added
-            const newUser = msg.message.protocolMessage?.recipientId;
-            await sock.sendMessage(from, { text: `Welcome to the group, @${newUser.split("@")[0]}! 🎉` });
-        }
 
         if (command) {
             const [cmd, ...args] = command;
@@ -60,13 +76,11 @@ const startSock = async () => {
 
             switch (cmd.toLowerCase()) {
                 case "menu":
-                case "|menu":
                     const menuText = `
 ╔════◇ *🤖 WHATSAPP BOT MENU* ◇════╗
 
 ┃  *COMMANDS LIST:*
-┃
-┃  ✦ *|menu* — Show this menu
+┃  ✦ *!menu* — Show this menu
 ┃  ✦ *!tagall* — Tag all members
 ┃  ✦ *!tagadmins* — Tag only admins
 ┃  ✦ *!ban @user* — Ban a member
@@ -76,7 +90,7 @@ const startSock = async () => {
 ┃  ✦ *!mute @user* — Demote member
 ┃  ✦ *!groupinfo* — View group details
 ┃  ✦ *!status 234xxxx* — Get user status
-┃  ✦ *!sticker* — Turn image to sticker
+┃  ✦ *!sticker* — Turn image/video to sticker
 ┃  ✦ *!grouppic* — Show group photo
 ┃  ✦ *!autoreply on/off* — Toggle replies
 ┃  ✦ *!setreply [text]* — Set reply text
@@ -89,8 +103,8 @@ const startSock = async () => {
 ║  ➤ *!setreply I am a bot. Type !help*
 ╚═════════════════════╝
 
-💡 _Pro Tip: You can use any command by typing it directly in the group._
-🔧 _Make sure the bot is admin for group commands._
+💡 _Type any command in the group._
+🔧 _Bot must be admin for group actions._
 
 *Bot by Baileys • Hosted on Replit*
                     `.trim();
@@ -102,7 +116,7 @@ const startSock = async () => {
                         await sock.sendMessage(from, { text: "Please type your auto-reply message.\nExample: !setreply I'm a bot!" });
                         return;
                     }
-                    customReplyText = command.slice(1 + cmd.length).trim();
+                    customReplyText = command.slice(1 + cmd.length).join(" ").trim();
                     await sock.sendMessage(from, { text: `✅ Auto-reply message updated to:\n"${customReplyText}"` });
                     break;
 
@@ -147,14 +161,15 @@ const startSock = async () => {
                 case "status":
                     if (!args[0]) return;
                     const statusJid = args[0].replace(/\D/g, "") + "@s.whatsapp.net";
-                    const statuses = store.presences[statusJid]?.lastKnownPresence;
-                    await sock.sendMessage(from, { text: `Status: ${statuses || "Unavailable"}` });
+                    const statuses = store?.presences?.[statusJid]?.lastKnownPresence || "Unavailable";
+                    await sock.sendMessage(from, { text: `Status: ${statuses}` });
                     break;
 
                 case "sticker":
-                    if (!msg.message.imageMessage) return;
-                    const buffer = await downloadMediaMessage(msg, "buffer", {}, { logger: pino({ level: "silent" }) });
-                    await sock.sendMessage(from, { sticker: buffer }, { quoted: msg });
+                    if (msg.message.imageMessage || msg.message.videoMessage) {
+                        const buffer = await downloadMediaMessage(msg, "buffer", {}, { logger: pino({ level: "silent" }) });
+                        await sock.sendMessage(from, { sticker: buffer }, { quoted: msg });
+                    }
                     break;
 
                 case "autoreply":
@@ -183,7 +198,7 @@ const startSock = async () => {
                 default:
                     await sock.sendMessage(from, { text: "Unknown command." });
             }
-        } else if (autoReplyEnabled && isGroup && !bannedUsers.has(sender)) {
+        } else if (autoReplyEnabled && !bannedUsers.has(sender)) {
             await sock.sendMessage(from, { text: customReplyText });
         }
     });

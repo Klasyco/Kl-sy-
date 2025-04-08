@@ -6,6 +6,46 @@ const path = require("path");
 const express = require("express");
 const axios = require("axios");
 
+// GitHub file upload function
+async function uploadToGitHub({ content, filePath, repo, owner, branch = "main" }) {
+    const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+
+    if (!GITHUB_TOKEN) {
+        console.error("GitHub token is missing.");
+        return;
+    }
+
+    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`;
+
+    let sha;
+    try {
+        const res = await axios.get(url, {
+            headers: {
+                Authorization: `token ${GITHUB_TOKEN}`,
+            },
+        });
+        sha = res.data.sha;
+    } catch (e) {
+        if (e.response?.status !== 404) {
+            console.error("Error checking file existence:", e.message);
+            return;
+        }
+    }
+
+    const response = await axios.put(url, {
+        message: "Update from WhatsApp bot",
+        content: Buffer.from(content).toString("base64"),
+        branch,
+        sha,
+    }, {
+        headers: {
+            Authorization: `token ${GITHUB_TOKEN}`,
+        },
+    });
+
+    console.log("File uploaded:", response.data.content.path);
+}
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const store = makeInMemoryStore({ logger: pino().child({ level: "silent" }) });

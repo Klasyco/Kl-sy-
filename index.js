@@ -1,4 +1,4 @@
-
+>
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage, makeInMemoryStore } = require("@whiskeysockets/baileys");
 const pino = require("pino");
 const fs = require("fs");
